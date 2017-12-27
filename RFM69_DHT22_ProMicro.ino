@@ -7,7 +7,8 @@
 
 #include "DHT.h"
 
-#include <Narcoleptic.h>
+//#include <Narcoleptic.h>
+#include "LowPower.h"
 
 //typedef char int8_t;
 //typedef short int16_t;
@@ -33,20 +34,28 @@
 
 /* PIN definitions */
 #define LED_PIN          9
-#define RFM69_RESET_PIN 18
 
 #define DHT22_DATA_PIN 8
 #define DHT22_VCC_PIN  6
 #define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
 
 // Atmega32u4
-#define INT_PIN 7
-#define INT_NUM 4
+//if defined(__AVR_ATmega32U4__)
+#if 0
+  #define RFM69_RESET_PIN 18
+  #define INT_PIN 7
+  #define INT_NUM 4
 
+#else
+  // Atmega328P
+  #define RFM69_RESET_PIN 14 //18
+  #define INT_PIN 7
+  #define INT_NUM 23
+#endif
 
 #define SERIAL_BAUD   9600
 
-#define RX_WAIT_MSEC 1000
+#define RX_WAIT_MSEC 100
 #define TX_RETRY 2
 #define TX_POWER_LEVEL_MAX 20
 
@@ -54,8 +63,8 @@
 bool powerDownDHT = true;
 bool rfm69Sleep = true;
 int8_t txPowerLevel = 2;
-long txPeriodMsec = 30000;
-unsigned int noChangeCntMax = 50; //-> 50*30sec
+unsigned long txPeriodMsec = 6 * 60 * 1000;
+unsigned int noChangeCntMax = 10; //-> 50*txPeriod
 bool requestACK = true;
 bool enableNarcoleptic = true;
 
@@ -102,6 +111,7 @@ void enableDHT(bool startup)
   {
     pinMode(DHT22_VCC_PIN, OUTPUT);
     digitalWrite(DHT22_VCC_PIN, HIGH);
+    digitalWrite(DHT22_DATA_PIN, OUTPUT);
     delay(1000);
   }
 }
@@ -112,6 +122,7 @@ void disableDHT(bool startup)
   {
     //digitalWrite(DHT22_VCC_PIN, LOW);
     pinMode(DHT22_VCC_PIN, INPUT);
+    digitalWrite(DHT22_DATA_PIN, INPUT);
   }
 }
 
@@ -155,6 +166,15 @@ void printDHT()
 /*******************************************************/
 void setup() 
 {
+  if(false)
+  {
+    noInterrupts();
+    CLKPR = 0x80;
+    CLKPR = 0x03; //div by 8
+    interrupts();
+  }
+  delay(10);
+  
   enableDHT(true);
   
   pinMode(RFM69_RESET_PIN, OUTPUT);
@@ -162,7 +182,8 @@ void setup()
   delay(20);
   digitalWrite(RFM69_RESET_PIN,LOW);
   delay(20);
-  
+
+#if 0
   int i;
   for(i = 0; i < 10; i++)
   {
@@ -176,6 +197,10 @@ void setup()
 
     delay(500);
    }
+#endif
+
+    txPeriodMsec = 10000;
+    noChangeCntMax = 2;
 
   dht.begin();
   
@@ -184,7 +209,7 @@ void setup()
 
   radio.setPowerLevel(txPowerLevel);
 
-  delay(5000);
+  delay(5000); //to allow programming
   
   Serial.println("done");
   
@@ -215,6 +240,7 @@ void setup()
 
 void Blink(byte PIN, int DELAY_MS)
 {
+  return;
   pinMode(PIN, OUTPUT);
   digitalWrite(PIN,HIGH);
   delay(DELAY_MS);
@@ -249,6 +275,20 @@ long readVcc() {
   result = 1125300L / result; // Calculate Vcc (in mV); 1125300 = 1.1*1023*1000
   return result; // Vcc in millivolts
 }
+
+void myDelay(int milliseconds) {
+  while (milliseconds >= 8000) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); milliseconds -= 8000; }
+  if (milliseconds >= 4000)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); milliseconds -= 4000; }
+  if (milliseconds >= 2000)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); milliseconds -= 2000; }
+  if (milliseconds >= 1000)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); milliseconds -= 1000; }
+  if (milliseconds >= 500)     { LowPower.powerDown(SLEEP_500MS, ADC_OFF, BOD_OFF); milliseconds -= 500; }
+  if (milliseconds >= 250)     { LowPower.powerDown(SLEEP_250MS, ADC_OFF, BOD_OFF); milliseconds -= 250; }
+  if (milliseconds >= 125)     { LowPower.powerDown(SLEEP_120MS, ADC_OFF, BOD_OFF); milliseconds -= 120; }
+  if (milliseconds >= 64)      { LowPower.powerDown(SLEEP_60MS, ADC_OFF, BOD_OFF); milliseconds -= 60; }
+  if (milliseconds >= 32)      { LowPower.powerDown(SLEEP_30MS, ADC_OFF, BOD_OFF); milliseconds -= 30; }
+  if (milliseconds >= 16)      { LowPower.powerDown(SLEEP_15MS, ADC_OFF, BOD_OFF); milliseconds -= 15; }
+}
+
 
 bool transmitWithRetry()
 {
@@ -335,6 +375,16 @@ bool transmitWithRetry()
   return gotAck;
 }
 
+void shutdown()
+{
+  disableDHT(false);
+  radio.sleep();
+  while(1)
+  {
+    myDelay(txPeriodMsec);
+  }
+}
+
 /*******************************************************/
 void loop() 
 {
@@ -347,10 +397,17 @@ void loop()
     // Read temperature as Celsius (the default)
     float t = dht.readTemperature();
 
+    disableDHT(false);
+    
     tinytx.type = TYPE_CNT_VCC_TEMP_HUMI;
     tinytx.temp= t*100;
     tinytx.humi= h*100;
     tinytx.vcc = readVcc(); // Get supply voltage
+
+    if(tinytx.vcc < 3000) //low bat
+    {
+      shutdown();
+    }
 
     bool forceTx = false;
     if(noChangeCnt >= noChangeCntMax)
@@ -403,8 +460,6 @@ void loop()
             Serial.println("sleep");
         }
 
-        disableDHT(false);
-
         if(rfm69Sleep)
             radio.sleep();
         else
@@ -421,15 +476,12 @@ void loop()
 
       noChangeCnt++;
     }
-    delay(100);    
 
     if(enableNarcoleptic)
-      Narcoleptic.delay(txPeriodMsec);
+      myDelay(txPeriodMsec);
     else
       delay(txPeriodMsec);
     
-    delay(100);
     radio.receiveDone();
-    delay(100);
   
 }
