@@ -65,7 +65,7 @@ bool rfm69Sleep = true;
 int8_t txPowerLevel = 2;
 
 #if 1
-unsigned int txPeriodSec = 5 * 60;
+unsigned int txPeriodSec = 4 * 60;
 #else
 unsigned int txPeriodSec = 10;
 #endif
@@ -107,6 +107,55 @@ tPayload tinytx;
 tPayload lastTx;
 bool lastAck = false;
 unsigned int noChangeCnt = 0;
+
+
+
+void sleepSec(int seconds) 
+{
+  if(lowPowerDelay)
+  {
+    while (seconds >= 4*8) 
+    { 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        seconds -= (4*8 + 3);
+        //Blink(LED_PIN, 50);
+    }
+    if (seconds >= 8)    { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); seconds -= 8; }
+    if (seconds >= 4)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); seconds -= 4; }
+    if (seconds >= 2)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); seconds -= 2; }
+    if (seconds >= 1)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); seconds -= 1; }
+  }
+  else
+  {
+     int i;
+     for(i = 0; i < seconds; i++)
+     {
+      delay(1000);
+     }
+  }
+}
+
+void myDelay(int milliseconds) 
+{
+  if(lowPowerDelay)
+  {
+    while (milliseconds >= 8000) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); milliseconds -= 8000; }
+    if (milliseconds >= 4000)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); milliseconds -= 4000; }
+    if (milliseconds >= 2000)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); milliseconds -= 2000; }
+    if (milliseconds >= 1000)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); milliseconds -= 1000; }
+    if (milliseconds >= 500)     { LowPower.powerDown(SLEEP_500MS, ADC_OFF, BOD_OFF); milliseconds -= 500; }
+    if (milliseconds >= 250)     { LowPower.powerDown(SLEEP_250MS, ADC_OFF, BOD_OFF); milliseconds -= 250; }
+    if (milliseconds >= 125)     { LowPower.powerDown(SLEEP_120MS, ADC_OFF, BOD_OFF); milliseconds -= 120; }
+    if (milliseconds >= 64)      { LowPower.powerDown(SLEEP_60MS, ADC_OFF, BOD_OFF); milliseconds -= 60; }
+    if (milliseconds >= 32)      { LowPower.powerDown(SLEEP_30MS, ADC_OFF, BOD_OFF); milliseconds -= 30; }
+    if (milliseconds >= 16)      { LowPower.powerDown(SLEEP_15MS, ADC_OFF, BOD_OFF); milliseconds -= 15; }
+  }
+  else
+    delay(milliseconds);
+}
 
 
 /* DHT helper functions */
@@ -294,52 +343,6 @@ long readVcc() {
   return result; // Vcc in millivolts
 }
 
-void sleepSec(int seconds) 
-{
-  if(lowPowerDelay)
-  {
-    while (seconds >= 4*8) 
-    { 
-        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
-        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
-        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
-        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
-        seconds -= (4*8 + 3);
-        //Blink(LED_PIN, 50);
-    }
-    if (seconds >= 8)    { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); seconds -= 8; }
-    if (seconds >= 4)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); seconds -= 4; }
-    if (seconds >= 2)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); seconds -= 2; }
-    if (seconds >= 1)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); seconds -= 1; }
-  }
-  else
-  {
-     int i;
-     for(i = 0; i < seconds; i++)
-     {
-      delay(1000);
-     }
-  }
-}
-
-void myDelay(int milliseconds) 
-{
-  if(lowPowerDelay)
-  {
-    while (milliseconds >= 8000) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); milliseconds -= 8000; }
-    if (milliseconds >= 4000)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); milliseconds -= 4000; }
-    if (milliseconds >= 2000)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); milliseconds -= 2000; }
-    if (milliseconds >= 1000)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); milliseconds -= 1000; }
-    if (milliseconds >= 500)     { LowPower.powerDown(SLEEP_500MS, ADC_OFF, BOD_OFF); milliseconds -= 500; }
-    if (milliseconds >= 250)     { LowPower.powerDown(SLEEP_250MS, ADC_OFF, BOD_OFF); milliseconds -= 250; }
-    if (milliseconds >= 125)     { LowPower.powerDown(SLEEP_120MS, ADC_OFF, BOD_OFF); milliseconds -= 120; }
-    if (milliseconds >= 64)      { LowPower.powerDown(SLEEP_60MS, ADC_OFF, BOD_OFF); milliseconds -= 60; }
-    if (milliseconds >= 32)      { LowPower.powerDown(SLEEP_30MS, ADC_OFF, BOD_OFF); milliseconds -= 30; }
-    if (milliseconds >= 16)      { LowPower.powerDown(SLEEP_15MS, ADC_OFF, BOD_OFF); milliseconds -= 15; }
-  }
-  else
-    delay(milliseconds);
-}
 
 
 bool transmitWithRetry(uint8_t nTxRetry)
@@ -462,17 +465,17 @@ void clearLed()
 /*******************************************************/
 void loop() 
 {
-    setLed();
     enableDHT(false);
+    setLed();
   
     bool txNow = false;
     float h = dht.readHumidity();
     
     // Read temperature as Celsius (the default)
     float t = dht.readTemperature();
-
-    disableDHT(false);
+    
     clearLed();
+    disableDHT(false);
     
     tinytx.type = TYPE_CNT_VCC_TEMP_HUMI;
     tinytx.temp= t*100;
