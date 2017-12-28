@@ -1,11 +1,10 @@
-
 #include <RFM69.h>         //get it here: https://www.github.com/lowpowerlab/rfm69
 #include <RFM69_ATC.h>     //get it here: https://www.github.com/lowpowerlab/rfm69
 #include <SPI.h>           //included with Arduino IDE install (www.arduino.cc)
 
 #include <RFM69registers.h>
 
-#include "DHT.h"
+#include <DHT.h>
 
 //#include <Narcoleptic.h>
 #include "LowPower.h"
@@ -40,20 +39,21 @@
 #define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
 
 // Atmega32u4
-//if defined(__AVR_ATmega32U4__)
-#if 0
+#if defined(__AVR_ATmega32U4__)
   #define RFM69_RESET_PIN 18
   #define INT_PIN 7
   #define INT_NUM 4
 
-#else
+#elif defined(__AVR_ATmega328P__)
   // Atmega328P
-  #define RFM69_RESET_PIN 14 //18
+  #define RFM69_RESET_PIN 14 
   #define INT_PIN 7
   #define INT_NUM 23
+#else
+  #error "need pin definitions"
 #endif
 
-#define SERIAL_BAUD   9600
+#define SERIAL_BAUD   38400 //115200
 
 #define RX_WAIT_MSEC 100
 #define TX_RETRY 2
@@ -63,11 +63,16 @@
 bool powerDownDHT = true;
 bool rfm69Sleep = true;
 int8_t txPowerLevel = 2;
-unsigned long txPeriodMsec = 6 * 60 * 1000;
-unsigned int noChangeCntMax = 10; //-> 50*txPeriod
-bool requestACK = true;
-bool enableNarcoleptic = true;
 
+#if 1
+unsigned int txPeriodSec = 5 * 60;
+#else
+unsigned int txPeriodSec = 10;
+#endif
+unsigned int noChangeCntMax = 0; 
+
+bool lowPowerDelay = true;
+bool serialDebug = false;
 /*******************************************/
 /* module classes */
 /*******************************************/
@@ -166,14 +171,22 @@ void printDHT()
 /*******************************************************/
 void setup() 
 {
-  if(false)
-  {
-    noInterrupts();
+  noInterrupts();
+#if F_CPU == 1000000
     CLKPR = 0x80;
     CLKPR = 0x03; //div by 8
-    interrupts();
-  }
+#elif F_CPU == 2000000
+    CLKPR = 0x80;
+    CLKPR = 0x02; //div by 4
+#elif F_CPU == 4000000
+    #warning "F_CPU: 4000000"
+    CLKPR = 0x80;
+    CLKPR = 0x01; //div by 2
+#endif
+  interrupts();
   delay(10);
+
+  pinMode(LED_PIN, OUTPUT);
   
   enableDHT(true);
   
@@ -189,8 +202,8 @@ void setup()
   {
     if (Serial)
     {
-      enableNarcoleptic = false;
-      txPeriodMsec = 5000;
+      lowPowerDelay = false;
+      txPeriodSec = 5;
       noChangeCntMax = 5;
       break;
     }
@@ -199,11 +212,15 @@ void setup()
    }
 #endif
 
-    txPeriodMsec = 10000;
-    noChangeCntMax = 2;
+  if(serialDebug)
+  {
+    txPeriodSec = 10;
+    noChangeCntMax = 1;
+  }
 
   dht.begin();
-  
+
+  Serial.begin(SERIAL_BAUD);
   Serial.println("setup radio");  
   radio.initialize(FREQUENCY,NODEID,NETWORKID);
 
@@ -240,12 +257,13 @@ void setup()
 
 void Blink(byte PIN, int DELAY_MS)
 {
-  return;
   pinMode(PIN, OUTPUT);
   digitalWrite(PIN,HIGH);
   delay(DELAY_MS);
   digitalWrite(PIN,LOW);
 }
+
+
 
 //--------------------------------------------------------------------------------------------------
 // Read current supply voltage
@@ -276,27 +294,68 @@ long readVcc() {
   return result; // Vcc in millivolts
 }
 
-void myDelay(int milliseconds) {
-  while (milliseconds >= 8000) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); milliseconds -= 8000; }
-  if (milliseconds >= 4000)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); milliseconds -= 4000; }
-  if (milliseconds >= 2000)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); milliseconds -= 2000; }
-  if (milliseconds >= 1000)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); milliseconds -= 1000; }
-  if (milliseconds >= 500)     { LowPower.powerDown(SLEEP_500MS, ADC_OFF, BOD_OFF); milliseconds -= 500; }
-  if (milliseconds >= 250)     { LowPower.powerDown(SLEEP_250MS, ADC_OFF, BOD_OFF); milliseconds -= 250; }
-  if (milliseconds >= 125)     { LowPower.powerDown(SLEEP_120MS, ADC_OFF, BOD_OFF); milliseconds -= 120; }
-  if (milliseconds >= 64)      { LowPower.powerDown(SLEEP_60MS, ADC_OFF, BOD_OFF); milliseconds -= 60; }
-  if (milliseconds >= 32)      { LowPower.powerDown(SLEEP_30MS, ADC_OFF, BOD_OFF); milliseconds -= 30; }
-  if (milliseconds >= 16)      { LowPower.powerDown(SLEEP_15MS, ADC_OFF, BOD_OFF); milliseconds -= 15; }
+void sleepSec(int seconds) 
+{
+  if(lowPowerDelay)
+  {
+    while (seconds >= 4*8) 
+    { 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); 
+        seconds -= (4*8 + 3);
+        //Blink(LED_PIN, 50);
+    }
+    if (seconds >= 8)    { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); seconds -= 8; }
+    if (seconds >= 4)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); seconds -= 4; }
+    if (seconds >= 2)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); seconds -= 2; }
+    if (seconds >= 1)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); seconds -= 1; }
+  }
+  else
+  {
+     int i;
+     for(i = 0; i < seconds; i++)
+     {
+      delay(1000);
+     }
+  }
+}
+
+void myDelay(int milliseconds) 
+{
+  if(lowPowerDelay)
+  {
+    while (milliseconds >= 8000) { LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF); milliseconds -= 8000; }
+    if (milliseconds >= 4000)    { LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF); milliseconds -= 4000; }
+    if (milliseconds >= 2000)    { LowPower.powerDown(SLEEP_2S, ADC_OFF, BOD_OFF); milliseconds -= 2000; }
+    if (milliseconds >= 1000)    { LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF); milliseconds -= 1000; }
+    if (milliseconds >= 500)     { LowPower.powerDown(SLEEP_500MS, ADC_OFF, BOD_OFF); milliseconds -= 500; }
+    if (milliseconds >= 250)     { LowPower.powerDown(SLEEP_250MS, ADC_OFF, BOD_OFF); milliseconds -= 250; }
+    if (milliseconds >= 125)     { LowPower.powerDown(SLEEP_120MS, ADC_OFF, BOD_OFF); milliseconds -= 120; }
+    if (milliseconds >= 64)      { LowPower.powerDown(SLEEP_60MS, ADC_OFF, BOD_OFF); milliseconds -= 60; }
+    if (milliseconds >= 32)      { LowPower.powerDown(SLEEP_30MS, ADC_OFF, BOD_OFF); milliseconds -= 30; }
+    if (milliseconds >= 16)      { LowPower.powerDown(SLEEP_15MS, ADC_OFF, BOD_OFF); milliseconds -= 15; }
+  }
+  else
+    delay(milliseconds);
 }
 
 
-bool transmitWithRetry()
+bool transmitWithRetry(uint8_t nTxRetry)
 {
   bool gotAck = false;
+  bool requestACK;
   uint8_t retry;
-  for(retry = 0; retry < TX_RETRY; retry++)
+  
+  if(nTxRetry > 0)
+    requestACK = true;
+  else
+    requestACK = false;
+      
+  for(retry = 0; retry <= nTxRetry; retry++)
   {
-      if(Serial)
+      if(serialDebug)
       {
           Serial.print("transmit (retry: ");
           Serial.print(retry);
@@ -304,16 +363,21 @@ bool transmitWithRetry()
       }
         
       radio.send(GATEWAYID, &tinytx, sizeof(tinytx), requestACK);
-      Blink(LED_PIN,3);
+
+      if(nTxRetry == 0)
+      {
+        lastTx = tinytx;
+        return true;
+      }
   
-      if(Serial)
+      if(serialDebug)
       {
         Serial.println("wait ACK");
       }
       long ackWait = millis();
       while(millis() - ackWait < RX_WAIT_MSEC)
       {
-        if(Serial)
+        if(serialDebug)
         {
           Serial.print("rssi: ");
           Serial.print(radio.readRSSI());
@@ -324,7 +388,7 @@ bool transmitWithRetry()
         {
           lastTx = tinytx;
           gotAck = true;
-          if(Serial)
+          if(serialDebug)
           {
             Serial.print("ACK received");
             
@@ -381,15 +445,25 @@ void shutdown()
   radio.sleep();
   while(1)
   {
-    myDelay(txPeriodMsec);
+    sleepSec(60);
   }
+}
+
+void setLed()
+{
+  digitalWrite(LED_PIN, HIGH);
+}
+
+void clearLed()
+{
+   digitalWrite(LED_PIN, LOW);
 }
 
 /*******************************************************/
 void loop() 
 {
+    setLed();
     enableDHT(false);
-
   
     bool txNow = false;
     float h = dht.readHumidity();
@@ -398,6 +472,7 @@ void loop()
     float t = dht.readTemperature();
 
     disableDHT(false);
+    clearLed();
     
     tinytx.type = TYPE_CNT_VCC_TEMP_HUMI;
     tinytx.temp= t*100;
@@ -408,23 +483,25 @@ void loop()
     {
       shutdown();
     }
-
+    
     bool forceTx = false;
     if(noChangeCnt >= noChangeCntMax)
     {
       forceTx = true;
     }
 
+    bool tempChange = abs(tinytx.temp - lastTx.temp) >  20;
+    bool humiChange = abs(tinytx.humi - lastTx.humi) > 200;
+    bool vccChange = abs(tinytx.vcc - lastTx.vcc) > 50;
+    
     if(forceTx || lastAck == false || 
-       abs(tinytx.temp - lastTx.temp) >  20 ||
-       abs(tinytx.humi - lastTx.humi) > 200 || 
-       abs(tinytx.vcc - lastTx.vcc) > 50 )
+       tempChange || humiChange || vccChange)
     {
       tinytx.cnt = txCnt++;
       txNow = true;
     }
 
-    if(Serial)
+    if(serialDebug)
     {
         Serial.print("type: ");
         Serial.print(tinytx.type);
@@ -440,26 +517,49 @@ void loop()
         
         Serial.print(", humi: ");
         Serial.print(tinytx.humi);
+
+        Serial.print(", noChangeCnt: ");
+        Serial.print(noChangeCnt);
+#if 0
+        if(tempChange)
+          Serial.print(", tempChange ");
+        
+        if(humiChange)
+          Serial.print(", humiChange ");
+
+        if(vccChange)
+          Serial.print(", vccChange ");
+#endif  
+        if(forceTx)
+          Serial.print(", forceTx ");
+          
+        if(lastAck == false)
+          Serial.print(", noAck ");
                 
         Serial.print("\n");
     }
 
     if(txNow)
     {
-        noChangeCnt = 0;
-        bool gotAck = transmitWithRetry();
+        setLed();
+
+        radio.receiveDone();
         
+        noChangeCnt = 0;
+        bool gotAck = transmitWithRetry(0);
         lastAck = gotAck;
 
-        Serial.print("txPowerLevel: ");
-        Serial.print(txPowerLevel);
-        Serial.print("\n");
-
-        if(Serial)
+        if(serialDebug)
         {
-            Serial.println("sleep");
-        }
+            Serial.print("txPowerLevel: ");
+            Serial.print(txPowerLevel);
+            Serial.print("\n");
 
+            Serial.println("sleep");
+            delay(20);
+        }
+        clearLed();
+              
         if(rfm69Sleep)
             radio.sleep();
         else
@@ -467,21 +567,16 @@ void loop()
     }
     else
     {
-      if(Serial)
+      if(serialDebug)
       {
         Serial.print("no change: ");
         Serial.print(noChangeCnt);
         Serial.print("\n");
+        delay(20);
       }
 
       noChangeCnt++;
     }
 
-    if(enableNarcoleptic)
-      myDelay(txPeriodMsec);
-    else
-      delay(txPeriodMsec);
-    
-    radio.receiveDone();
-  
+    sleepSec(txPeriodSec);
 }
