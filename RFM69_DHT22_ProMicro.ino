@@ -4,18 +4,16 @@
 
 #include <RFM69registers.h>
 
-#include <DHT.h>
-
 //#include <Narcoleptic.h>
 #include "LowPower.h"
 
-//typedef char int8_t;
-//typedef short int16_t;
+//#include "boot.h"
+#include <avr/boot.h>
 
 //*********************************************************************************************
 //************ IMPORTANT SETTINGS - YOU MUST CHANGE/CONFIGURE TO FIT YOUR HARDWARE ************
 //*********************************************************************************************
-#define NODEID      2    //must be unique for each node on same network (range up to 254, 255 is used for broadcast)
+#define NODEID      3    //must be unique for each node on same network (range up to 254, 255 is used for broadcast)
 #define NETWORKID   100  //the same on all nodes that talk to each other (range up to 255)
 #define GATEWAYID   1
 #define FREQUENCY   RF69_868MHZ
@@ -38,6 +36,10 @@
 #define DHT22_VCC_PIN  6
 #define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
 
+
+#define USE_BME
+//#define USE_DHT
+
 // Atmega32u4
 #if defined(__AVR_ATmega32U4__)
   #define RFM69_RESET_PIN 18
@@ -53,7 +55,7 @@
   #error "need pin definitions"
 #endif
 
-#define SERIAL_BAUD   38400 //115200
+#define SERIAL_BAUD   9600 //38400 //115200
 
 #define RX_WAIT_MSEC 100
 #define TX_RETRY 2
@@ -62,27 +64,30 @@
 /* dynamic config parameters */
 bool powerDownDHT = true;
 bool rfm69Sleep = true;
-int8_t txPowerLevel = 2;
+int8_t txPowerLevel = 0;
 
 #if 1
-unsigned int txPeriodSec = 4 * 60;
+unsigned int txPeriodSec = 5 * 60;
 #else
 unsigned int txPeriodSec = 10;
 #endif
-unsigned int noChangeCntMax = 0; 
+unsigned int noChangeCntMax = 6; 
 
 bool lowPowerDelay = true;
 bool serialDebug = false;
 /*******************************************/
 /* module classes */
 /*******************************************/
-#ifdef ENABLE_ATC
-  RFM69_ATC radio(10, 4 /*DIO0/INT*/);
-#else
-  RFM69 radio(10, INT_PIN /*DIO0/INT*/, true /*isRFM69HW*/, INT_NUM /*IRQ Num*/);
-#endif
+RFM69 radio(10, INT_PIN /*DIO0/INT*/, true /*isRFM69HW*/, INT_NUM /*IRQ Num*/);
 
-DHT dht(DHT22_DATA_PIN, DHTTYPE);
+#if defined(USE_DHT)
+  #include <DHT.h>
+  DHT dht(DHT22_DATA_PIN, DHTTYPE);
+#elif defined(USE_BME)
+  #include "SparkFunBME280.h"
+  #include "Wire.h"
+  BME280 bme280;
+#endif
 /*******************************************/
 
 uint8_t txCnt = 0;
@@ -157,6 +162,62 @@ void myDelay(int milliseconds)
     delay(milliseconds);
 }
 
+void initBME280()
+{
+    //For I2C, enable the following and disable the SPI section
+  bme280.settings.commInterface = I2C_MODE;
+  bme280.settings.I2CAddress = 0x76;
+  
+  //For SPI enable the following and dissable the I2C section
+  //bme280.settings.commInterface = SPI_MODE;
+  //bme280.settings.chipSelectPin = 10;
+
+
+  //***Operation settings*****************************//
+  
+  //renMode can be:
+  //  0, Sleep mode
+  //  1 or 2, Forced mode
+  //  3, Normal mode
+  bme280.settings.runMode = 3; //Normal mode
+  
+  //tStandby can be:
+  //  0, 0.5ms
+  //  1, 62.5ms
+  //  2, 125ms
+  //  3, 250ms
+  //  4, 500ms
+  //  5, 1000ms
+  //  6, 10ms
+  //  7, 20ms
+  bme280.settings.tStandby = 5;
+  
+  //filter can be off or number of FIR coefficients to use:
+  //  0, filter off
+  //  1, coefficients = 2
+  //  2, coefficients = 4
+  //  3, coefficients = 8
+  //  4, coefficients = 16
+  bme280.settings.filter = 0;
+  
+  //tempOverSample can be:
+  //  0, skipped
+  //  1 through 5, oversampling *1, *2, *4, *8, *16 respectively
+  bme280.settings.tempOverSample = 1;
+
+  //pressOverSample can be:
+  //  0, skipped
+  //  1 through 5, oversampling *1, *2, *4, *8, *16 respectively
+    bme280.settings.pressOverSample = 1;
+  
+  //humidOverSample can be:
+  //  0, skipped
+  //  1 through 5, oversampling *1, *2, *4, *8, *16 respectively
+  bme280.settings.humidOverSample = 1;
+
+  delay(10);  //Make sure sensor had enough time to turn on. BME280 requires 2ms to start up.
+  bme280.begin();
+}
 
 /* DHT helper functions */
 void enableDHT(bool startup)
@@ -180,6 +241,7 @@ void disableDHT(bool startup)
   }
 }
 
+#ifdef USE_DHT
 void printDHT()
 {
    // Reading temperature or humidity takes about 250 milliseconds!
@@ -215,7 +277,7 @@ void printDHT()
   Serial.print(hif);
   Serial.println(" *F");
 }
-
+#endif
 
 /*******************************************************/
 void setup() 
@@ -232,6 +294,8 @@ void setup()
     CLKPR = 0x80;
     CLKPR = 0x01; //div by 2
 #endif
+
+  uint8_t extFuse = boot_lock_fuse_bits_get(GET_EXTENDED_FUSE_BITS);
   interrupts();
   delay(10);
 
@@ -264,12 +328,21 @@ void setup()
   if(serialDebug)
   {
     txPeriodSec = 10;
-    noChangeCntMax = 1;
+    noChangeCntMax = 0;
   }
 
+#ifdef USE_BME
+  initBME280();
+#endif
+#ifdef USE_DHT  
   dht.begin();
+#endif
 
   Serial.begin(SERIAL_BAUD);
+
+  Serial.print("extFuse: ");
+  Serial.println(extFuse, HEX);
+  
   Serial.println("setup radio");  
   radio.initialize(FREQUENCY,NODEID,NETWORKID);
 
@@ -465,24 +538,31 @@ void clearLed()
 /*******************************************************/
 void loop() 
 {
-    enableDHT(false);
-    setLed();
-  
     bool txNow = false;
-    float h = dht.readHumidity();
+    setLed();
     
+#if defined(USE_DHT)
+    enableDHT(false);
+   
+    float h = dht.readHumidity();
     // Read temperature as Celsius (the default)
     float t = dht.readTemperature();
     
-    clearLed();
     disableDHT(false);
+#elif defined USE_BME
+  float t = bme280.readTempC();
+  float p = bme280.readFloatPressure();
+  float h = bme280.readFloatHumidity();
+#endif
     
+    clearLed();
+        
     tinytx.type = TYPE_CNT_VCC_TEMP_HUMI;
     tinytx.temp= t*100;
     tinytx.humi= h*100;
     tinytx.vcc = readVcc(); // Get supply voltage
 
-    if(tinytx.vcc < 3000) //low bat
+    if(tinytx.vcc < 2200) //low bat
     {
       shutdown();
     }
