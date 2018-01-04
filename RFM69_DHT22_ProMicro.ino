@@ -49,15 +49,15 @@
 #elif defined(__AVR_ATmega328P__)
   // Atmega328P
   #define RFM69_RESET_PIN 14 
-  #define INT_PIN 7
-  #define INT_NUM 23
+  #define INT_PIN 3
+  #define INT_NUM 1
 #else
   #error "need pin definitions"
 #endif
 
 #define SERIAL_BAUD   9600 //38400 //115200
 
-#define RX_WAIT_MSEC 100
+#define RX_WAIT_MSEC 50
 #define TX_RETRY 2
 #define TX_POWER_LEVEL_MAX 20
 
@@ -66,13 +66,12 @@ bool powerDownDHT = true;
 bool rfm69Sleep = true;
 int8_t txPowerLevel = 0;
 
-#if 1
-unsigned int txPeriodSec = 5 * 60;
-#else
-unsigned int txPeriodSec = 10;
-#endif
-unsigned int noChangeCntMax = 6; 
+#define LOOP_PERIOD_SEC (5*60)
+#define NO_CHANGE_CNT_MAX 6
 
+unsigned int txPeriodSec = LOOP_PERIOD_SEC;
+unsigned int noChangeCntMax = NO_CHANGE_CNT_MAX; 
+bool startupTx = true;
 bool lowPowerDelay = true;
 bool serialDebug = false;
 /*******************************************/
@@ -92,7 +91,7 @@ RFM69 radio(10, INT_PIN /*DIO0/INT*/, true /*isRFM69HW*/, INT_NUM /*IRQ Num*/);
 
 uint8_t txCnt = 0;
 
-#define TYPE_CNT_VCC_TEMP_HUMI 1
+#define TYPE_CNT_VCC_TEMP_HUMI_PRES 1
 
 typedef struct {
   byte type;
@@ -100,6 +99,8 @@ typedef struct {
   int vcc;  // Supply voltage
   int temp;  // Temperature reading
   int humi;
+  int pres;
+  byte txLev;
 } tPayload;
 
 #define TYPE_TXPOWERCHANGE 2
@@ -162,6 +163,7 @@ void myDelay(int milliseconds)
     delay(milliseconds);
 }
 
+#ifdef USE_BME
 void initBME280()
 {
     //For I2C, enable the following and disable the SPI section
@@ -179,7 +181,7 @@ void initBME280()
   //  0, Sleep mode
   //  1 or 2, Forced mode
   //  3, Normal mode
-  bme280.settings.runMode = 3; //Normal mode
+  bme280.settings.runMode = 1; //Forced mode
   
   //tStandby can be:
   //  0, 0.5ms
@@ -190,7 +192,7 @@ void initBME280()
   //  5, 1000ms
   //  6, 10ms
   //  7, 20ms
-  bme280.settings.tStandby = 5;
+  bme280.settings.tStandby = 0;
   
   //filter can be off or number of FIR coefficients to use:
   //  0, filter off
@@ -218,6 +220,7 @@ void initBME280()
   delay(10);  //Make sure sensor had enough time to turn on. BME280 requires 2ms to start up.
   bme280.begin();
 }
+#endif
 
 /* DHT helper functions */
 void enableDHT(bool startup)
@@ -325,10 +328,10 @@ void setup()
    }
 #endif
 
-  if(serialDebug)
+  if(startupTx)
   {
-    txPeriodSec = 10;
-    noChangeCntMax = 0;
+    txPeriodSec = 5;
+    noChangeCntMax = 1;
   }
 
 #ifdef USE_BME
@@ -348,7 +351,9 @@ void setup()
 
   radio.setPowerLevel(txPowerLevel);
 
-  delay(5000); //to allow programming
+  delay(4000); //to allow programming
+
+  
   
   Serial.println("done");
   
@@ -464,6 +469,20 @@ bool transmitWithRetry(uint8_t nTxRetry)
         {
           lastTx = tinytx;
           gotAck = true;
+
+          tAckData *pAck = (tAckData*) &radio.DATA[0];
+          if(pAck->type == TYPE_TXPOWERCHANGE)
+          {
+              txPowerLevel += pAck->txPowerChange;
+          }
+
+          if(txPowerLevel > TX_POWER_LEVEL_MAX)
+            txPowerLevel = TX_POWER_LEVEL_MAX;
+          if(txPowerLevel < 0)
+              txPowerLevel = 0;
+    
+          radio.setPowerLevel(txPowerLevel);
+
           if(serialDebug)
           {
             Serial.print("ACK received");
@@ -480,29 +499,23 @@ bool transmitWithRetry(uint8_t nTxRetry)
             {
                 Serial.print(", txPowerChange: ");
                 Serial.print(pAck->txPowerChange);
-                txPowerLevel += pAck->txPowerChange;
             }
             Serial.print("\n");
-
-            if(txPowerLevel > TX_POWER_LEVEL_MAX)
-              txPowerLevel = TX_POWER_LEVEL_MAX;
-            if(txPowerLevel < 0)
-                txPowerLevel = 0;
-      
-            radio.setPowerLevel(txPowerLevel);
-
           }
-  
+
+          Serial.print(", txPowerLevel: ");
+          Serial.print(txPowerLevel);
+
           break;
        }
         
-        delay(100);
+        delay(5);
       }
       if(gotAck)
         break;
       else
       {
-        txPowerLevel += 10;
+        txPowerLevel += 6;
       }
       if(txPowerLevel > TX_POWER_LEVEL_MAX)
           txPowerLevel = TX_POWER_LEVEL_MAX;
@@ -538,7 +551,16 @@ void clearLed()
 /*******************************************************/
 void loop() 
 {
-    bool txNow = false;
+  bool forceTx = false;  
+  
+  if(startupTx && (txCnt > 2))
+  {
+    txPeriodSec = LOOP_PERIOD_SEC;
+    noChangeCntMax = NO_CHANGE_CNT_MAX; 
+    startupTx = false;
+    forceTx = true;
+  }
+  
     setLed();
     
 #if defined(USE_DHT)
@@ -550,24 +572,32 @@ void loop()
     
     disableDHT(false);
 #elif defined USE_BME
+  bme280.reInit();
+  delay(10);
+  //bme280.begin();
   float t = bme280.readTempC();
   float p = bme280.readFloatPressure();
   float h = bme280.readFloatHumidity();
+#else
+  float h = 0;
+  float t = radio.readTemperature();
+  radio.sleep();
 #endif
     
     clearLed();
         
-    tinytx.type = TYPE_CNT_VCC_TEMP_HUMI;
+    tinytx.type = TYPE_CNT_VCC_TEMP_HUMI_PRES;
     tinytx.temp= t*100;
     tinytx.humi= h*100;
     tinytx.vcc = readVcc(); // Get supply voltage
-
+    tinytx.pres = p/10;
+    tinytx.txLev = txPowerLevel;
+    
     if(tinytx.vcc < 2200) //low bat
     {
       shutdown();
     }
-    
-    bool forceTx = false;
+  
     if(noChangeCnt >= noChangeCntMax)
     {
       forceTx = true;
@@ -576,6 +606,7 @@ void loop()
     bool tempChange = abs(tinytx.temp - lastTx.temp) >  20;
     bool humiChange = abs(tinytx.humi - lastTx.humi) > 200;
     bool vccChange = abs(tinytx.vcc - lastTx.vcc) > 50;
+    bool txNow = false;
     
     if(forceTx || lastAck == false || 
        tempChange || humiChange || vccChange)
@@ -626,10 +657,13 @@ void loop()
     {
         setLed();
 
-        radio.receiveDone();
+        //radio.receiveDone();
         
         noChangeCnt = 0;
-        bool gotAck = transmitWithRetry(0);
+        uint8_t retry = 0;
+        if(startupTx)
+          retry = 1;
+        bool gotAck = transmitWithRetry(retry);
         lastAck = gotAck;
 
         if(serialDebug)
